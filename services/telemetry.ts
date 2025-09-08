@@ -3,7 +3,7 @@ import { loadTelemetry, saveToTelemetry } from './storage';
 
 class TelemetryService {
   private events: TelemetryEvent[] = [];
-  private maxEvents = 1000; // Máximo número de eventos a mantener
+  private maxEvents = 1000;
   
   constructor() {
     this.loadStoredEvents();
@@ -21,7 +21,6 @@ class TelemetryService {
 
   private async saveEvents() {
     try {
-      // Mantener solo los eventos más recientes
       if (this.events.length > this.maxEvents) {
         this.events = this.events.slice(-this.maxEvents);
       }
@@ -32,7 +31,6 @@ class TelemetryService {
     }
   }
 
-  // Registrar un evento
   async logEvent(
     type: TelemetryEvent['type'], 
     details: Record<string, any> = {}
@@ -48,19 +46,15 @@ class TelemetryService {
 
     this.events.push(event);
     
-    // Log en consola para debugging
     console.log(`📊 [TELEMETRY] ${type}:`, details);
     
-    // Guardar en storage de forma asíncrona
     this.saveEvents();
   }
 
-  // Obtener eventos por tipo
   getEventsByType(type: TelemetryEvent['type']): TelemetryEvent[] {
     return this.events.filter(event => event.type === type);
   }
 
-  // Obtener eventos en un rango de fechas
   getEventsInRange(startDate: Date, endDate: Date): TelemetryEvent[] {
     return this.events.filter(event => {
       const eventDate = new Date(event.timestamp);
@@ -68,7 +62,6 @@ class TelemetryService {
     });
   }
 
-  // Obtener estadísticas básicas
   getStats(): {
     totalEvents: number;
     eventsByType: Record<string, number>;
@@ -89,7 +82,6 @@ class TelemetryService {
     };
   }
 
-  // Limpiar eventos antiguos
   async clearOldEvents(daysOld: number = 30): Promise<number> {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - daysOld);
@@ -108,28 +100,29 @@ class TelemetryService {
     return removedCount;
   }
 
-  // Limpiar todos los eventos
   async clearAllEvents(): Promise<void> {
     this.events = [];
     await this.saveEvents();
     console.log('All telemetry events cleared');
   }
 
-  // Exportar eventos para debugging
+  // Exportar eventos sin usar Buffer (compatible con React Native)
   exportEvents(): string {
-    return JSON.stringify(this.events, null, 2);
+    try {
+      return JSON.stringify(this.events, null, 2);
+    } catch (error) {
+      console.error('Error exporting telemetry:', error);
+      return JSON.stringify({ error: 'Unable to export events' });
+    }
   }
 
-  // Obtener eventos recientes (útil para debugging)
   getRecentEvents(count: number = 10): TelemetryEvent[] {
     return this.events.slice(-count);
   }
 }
 
-// Crear instancia singleton
 const telemetryService = new TelemetryService();
 
-// Funciones de conveniencia
 export const logEvent = (type: TelemetryEvent['type'], details?: Record<string, any>) => {
   return telemetryService.logEvent(type, details);
 };
@@ -150,23 +143,14 @@ export const getRecentTelemetryEvents = (count?: number) => {
   return telemetryService.getRecentEvents(count);
 };
 
-// Eventos predefinidos para facilitar el uso
 export const TelemetryEvents = {
-  // Navegación
   APP_LAUNCHED: () => logEvent('app_launched', { timestamp: Date.now() }),
-  
-  // Personajes
   CHARACTER_VIEWED: (characterId: number, characterName: string) => 
     logEvent('character_viewed', { characterId, characterName }),
-  
-  // Favoritos
   FAVORITE_ADDED: (characterId: number, characterName: string) => 
     logEvent('favorite_added', { characterId, characterName }),
-  
   FAVORITE_REMOVED: (characterId: number) => 
     logEvent('favorite_removed', { characterId }),
-  
-  // Filtros
   FILTER_APPLIED: (filterType: string, filterValue: string) => 
     logEvent('filter_applied', { filterType, filterValue }),
 } as const;

@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useEffect, useReducer } from 'react';
 import { loadFavorites, saveFavorites } from '../services/storage';
-import { logEvent } from '../services/telemetry';
 import { Character, FavoritesAction, FavoritesState } from './types';
 
 const initialState: FavoritesState = {
@@ -9,12 +8,20 @@ const initialState: FavoritesState = {
   error: null,
 };
 
+// Función de logging local para evitar errores de tipos
+const logFavoritesEvent = (eventType: string, details: Record<string, any>) => {
+  console.log(`💝 [FAVORITES] ${eventType}:`, details);
+};
+
 function favoritesReducer(state: FavoritesState, action: FavoritesAction): FavoritesState {
   switch (action.type) {
     case 'ADD_FAVORITE':
       const newFavorites = [...state.favorites, action.payload];
       saveFavorites(newFavorites);
-      logEvent('favorite_added', { characterId: action.payload.id, characterName: action.payload.name });
+      logFavoritesEvent('favorite_added', { 
+        characterId: action.payload.id, 
+        characterName: action.payload.name 
+      });
       return {
         ...state,
         favorites: newFavorites,
@@ -23,7 +30,7 @@ function favoritesReducer(state: FavoritesState, action: FavoritesAction): Favor
     case 'REMOVE_FAVORITE':
       const filteredFavorites = state.favorites.filter(char => char.id !== action.payload);
       saveFavorites(filteredFavorites);
-      logEvent('favorite_removed', { characterId: action.payload });
+      logFavoritesEvent('favorite_removed', { characterId: action.payload });
       return {
         ...state,
         favorites: filteredFavorites,
@@ -72,9 +79,11 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
       try {
         const savedFavorites = await loadFavorites();
         dispatch({ type: 'SET_FAVORITES', payload: savedFavorites });
+        logFavoritesEvent('favorites_loaded', { count: savedFavorites.length });
       } catch (error) {
         console.error('Error loading favorites:', error);
         dispatch({ type: 'SET_ERROR', payload: 'Error al cargar favoritos' });
+        logFavoritesEvent('favorites_load_error', { error: String(error) });
       } finally {
         dispatch({ type: 'SET_LOADING', payload: false });
       }
@@ -98,9 +107,10 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
   };
 
   const clearFavorites = () => {
+    const previousCount = state.favorites.length;
     dispatch({ type: 'SET_FAVORITES', payload: [] });
     saveFavorites([]);
-    logEvent('favorites_cleared', {});
+    logFavoritesEvent('favorites_cleared', { previousCount });
   };
 
   return (

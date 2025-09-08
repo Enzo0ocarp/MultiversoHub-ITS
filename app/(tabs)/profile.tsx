@@ -1,36 +1,35 @@
+// app/(tabs)/profile.tsx - Actualizado con funciones de auth
 import { Ionicons } from '@expo/vector-icons';
-import Constants from 'expo-constants';
 import React, { useEffect, useState } from 'react';
 import {
-    Alert,
-    ScrollView,
-    Share,
-    StyleSheet,
-    Switch,
-    Text,
-    TouchableOpacity,
-    View,
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
+import { useAuth } from '../../context/AuthContext';
 import { useFavorites } from '../../context/FavoritesContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useConnectionStatus } from '../../hooks/useNetInfo';
-import { firebaseService } from '../../services/firebase';
+import { firebaseService } from '../../services/firebase.client';
 import {
-    clearAllData,
-    getStorageInfo,
-    loadUserPreferences,
-    saveUserPreferences,
-    UserPreferences
+  clearAllData,
+  getStorageInfo,
+  loadUserPreferences,
+  saveUserPreferences,
+  UserPreferences
 } from '../../services/storage';
 import {
-    clearTelemetryEvents,
-    exportTelemetryEvents,
-    getTelemetryStats
+  getTelemetryStats
 } from '../../services/telemetry';
 
 export default function ProfileScreen() {
   const { theme, isDark, toggleTheme } = useTheme();
   const { state: favoritesState, clearFavorites } = useFavorites();
+  const { user, userProfile, signOut, isLoading } = useAuth();
   const { isOnline } = useConnectionStatus();
   
   const [storageInfo, setStorageInfo] = useState({
@@ -43,9 +42,8 @@ export default function ProfileScreen() {
     notificationsEnabled: true,
     cacheEnabled: true,
   });
-  const [isLoading, setIsLoading] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
 
-  // Cargar información inicial
   useEffect(() => {
     loadInitialData();
   }, []);
@@ -64,7 +62,6 @@ export default function ProfileScreen() {
     }
   };
 
-  // Actualizar preferencia
   const updatePreference = async (key: keyof UserPreferences, value: any) => {
     const newPreferences = { ...userPreferences, [key]: value };
     setUserPreferences(newPreferences);
@@ -79,7 +76,27 @@ export default function ProfileScreen() {
     }
   };
 
-  // Limpiar todos los datos
+  const handleSignOut = () => {
+    Alert.alert(
+      'Cerrar Sesión',
+      '¿Estás seguro de que quieres cerrar sesión?',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Cerrar Sesión',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await signOut();
+            } catch (error) {
+              Alert.alert('Error', 'No se pudo cerrar sesión');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleClearAllData = () => {
     Alert.alert(
       'Limpiar Todos los Datos',
@@ -90,7 +107,7 @@ export default function ProfileScreen() {
           text: 'Eliminar Todo',
           style: 'destructive',
           onPress: async () => {
-            setIsLoading(true);
+            setIsProcessing(true);
             try {
               await clearAllData();
               if (isOnline) {
@@ -102,61 +119,8 @@ export default function ProfileScreen() {
               console.error('Error clearing data:', error);
               Alert.alert('Error', 'No se pudieron eliminar todos los datos');
             } finally {
-              setIsLoading(false);
+              setIsProcessing(false);
             }
-          },
-        },
-      ]
-    );
-  };
-
-  // Sincronizar datos con Firebase
-  const handleSyncData = async () => {
-    if (!isOnline) {
-      Alert.alert('Sin conexión', 'Necesitas conexión a internet para sincronizar');
-      return;
-    }
-
-    setIsLoading(true);
-    try {
-      await firebaseService.syncData(favoritesState.favorites, userPreferences);
-      Alert.alert('Éxito', 'Datos sincronizados correctamente');
-    } catch (error) {
-      console.error('Error syncing data:', error);
-      Alert.alert('Error', 'No se pudieron sincronizar los datos');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Exportar datos de telemetría
-  const handleExportTelemetry = async () => {
-    try {
-      const telemetryData = exportTelemetryEvents();
-      await Share.share({
-        message: 'Datos de telemetría de MultiversoHub',
-        title: 'Telemetría - MultiversoHub',
-        url: `data:application/json;base64,${Buffer.from(telemetryData).toString('base64')}`,
-      });
-    } catch (error) {
-      console.error('Error exporting telemetry:', error);
-      Alert.alert('Error', 'No se pudieron exportar los datos');
-    }
-  };
-
-  // Limpiar telemetría
-  const handleClearTelemetry = () => {
-    Alert.alert(
-      'Limpiar Telemetría',
-      '¿Estás seguro de que quieres eliminar todos los datos de telemetría?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: async () => {
-            await clearTelemetryEvents();
-            Alert.alert('Éxito', 'Datos de telemetría eliminados');
           },
         },
       ]
@@ -219,15 +183,27 @@ export default function ProfileScreen() {
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: theme.background }]}>
-      {/* Header */}
+      {/* User Header */}
       <View style={[styles.header, { backgroundColor: theme.surface }]}>
         <View style={[styles.avatarContainer, { backgroundColor: theme.primary + '20' }]}>
           <Ionicons name="person" size={32} color={theme.primary} />
         </View>
-        <Text style={[styles.headerTitle, { color: theme.text }]}>Mi Perfil</Text>
-        <Text style={[styles.headerSubtitle, { color: theme.textSecondary }]}>
-          MultiversoHub v{Constants.expoConfig?.version || '1.0.0'}
+        <Text style={[styles.headerTitle, { color: theme.text }]}>
+          {userProfile?.displayName || user?.email || 'Usuario'}
         </Text>
+        <Text style={[styles.headerSubtitle, { color: theme.textSecondary }]}>
+          {user?.email}
+        </Text>
+        <TouchableOpacity
+          style={[styles.signOutButton, { backgroundColor: theme.error + '20' }]}
+          onPress={handleSignOut}
+          disabled={isLoading}
+        >
+          <Ionicons name="log-out" size={16} color={theme.error} />
+          <Text style={[styles.signOutText, { color: theme.error }]}>
+            Cerrar Sesión
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {/* Estadísticas */}
@@ -283,95 +259,20 @@ export default function ProfileScreen() {
         />
       </View>
 
-      {/* Preferencias */}
+      {/* Cuenta */}
       <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: theme.text }]}>Preferencias</Text>
+        <Text style={[styles.sectionTitle, { color: theme.text }]}>Cuenta</Text>
         
         <SettingItem
-          icon="notifications"
-          title="Notificaciones"
-          subtitle={userPreferences.notificationsEnabled ? 'Activadas' : 'Desactivadas'}
-          rightElement={
-            <Switch
-              value={userPreferences.notificationsEnabled}
-              onValueChange={(value) => updatePreference('notificationsEnabled', value)}
-              trackColor={{ false: theme.border, true: theme.primary }}
-              thumbColor="white"
-            />
-          }
+          icon="person-circle"
+          title="Información de la cuenta"
+          subtitle={`Miembro desde ${userProfile?.createdAt ? new Date(userProfile.createdAt).getFullYear() : 'Desconocido'}`}
         />
         
         <SettingItem
-          icon="save"
-          title="Cache Automático"
-          subtitle={userPreferences.cacheEnabled ? 'Activado' : 'Desactivado'}
-          rightElement={
-            <Switch
-              value={userPreferences.cacheEnabled}
-              onValueChange={(value) => updatePreference('cacheEnabled', value)}
-              trackColor={{ false: theme.border, true: theme.primary }}
-              thumbColor="white"
-            />
-          }
-        />
-      </View>
-
-      {/* Datos y Sincronización */}
-      <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: theme.text }]}>Datos</Text>
-        
-        {isOnline && (
-          <SettingItem
-            icon="cloud-upload"
-            title="Sincronizar Datos"
-            subtitle="Respaldar favoritos y preferencias"
-            onPress={handleSyncData}
-          />
-        )}
-        
-        <SettingItem
-          icon="share"
-          title="Exportar Telemetría"
-          subtitle={`${telemetryStats.totalEvents} eventos registrados`}
-          onPress={handleExportTelemetry}
-        />
-        
-        <SettingItem
-          icon="trash"
-          title="Limpiar Telemetría"
-          subtitle="Eliminar datos de uso"
-          onPress={handleClearTelemetry}
-          danger
-        />
-      </View>
-
-      {/* Información */}
-      <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: theme.text }]}>Información</Text>
-        
-        <SettingItem
-          icon="information-circle"
-          title="Versión de la App"
-          subtitle={Constants.expoConfig?.version || '1.0.0'}
-        />
-        
-        <SettingItem
-          icon="wifi"
-          title="Estado de Conexión"
-          subtitle={isOnline ? 'Conectado' : 'Sin conexión'}
-          rightElement={
-            <Ionicons 
-              name={isOnline ? "checkmark-circle" : "close-circle"} 
-              size={20} 
-              color={isOnline ? theme.success : theme.error} 
-            />
-          }
-        />
-        
-        <SettingItem
-          icon="server"
-          title="Cache Local"
-          subtitle={`${storageInfo.cacheKeys} elementos en cache`}
+          icon="time"
+          title="Último acceso"
+          subtitle={userProfile?.lastLoginAt ? new Date(userProfile.lastLoginAt).toLocaleDateString() : 'Desconocido'}
         />
       </View>
 
@@ -404,17 +305,6 @@ export default function ProfileScreen() {
           danger
         />
       </View>
-
-      {/* Estado de carga */}
-      {isLoading && (
-        <View style={[styles.loadingOverlay, { backgroundColor: theme.background + 'CC' }]}>
-          <View style={[styles.loadingContainer, { backgroundColor: theme.surface }]}>
-            <Text style={[styles.loadingText, { color: theme.text }]}>
-              Procesando...
-            </Text>
-          </View>
-        </View>
-      )}
     </ScrollView>
   );
 }
@@ -443,6 +333,19 @@ const styles = StyleSheet.create({
   },
   headerSubtitle: {
     fontSize: 14,
+    marginBottom: 16,
+  },
+  signOutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    gap: 6,
+  },
+  signOutText: {
+    fontSize: 14,
+    fontWeight: '500',
   },
   section: {
     marginBottom: 24,
@@ -511,27 +414,5 @@ const styles = StyleSheet.create({
   },
   settingSubtitle: {
     fontSize: 14,
-  },
-  loadingOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingContainer: {
-    padding: 20,
-    borderRadius: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  loadingText: {
-    fontSize: 16,
-    fontWeight: '500',
   },
 });
