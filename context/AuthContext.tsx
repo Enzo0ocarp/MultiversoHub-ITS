@@ -1,18 +1,7 @@
+// context/AuthContext.tsx - Con bypass del problema Auth
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {
-    createUserWithEmailAndPassword,
-    signOut as firebaseSignOut,
-    GoogleAuthProvider,
-    onAuthStateChanged,
-    sendPasswordResetEmail,
-    signInWithCredential,
-    signInWithEmailAndPassword,
-    updateProfile,
-    User,
-} from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { firebaseInitialized, getFirebaseAuth, getFirebaseDB } from '../services/firebase.client';
+import { firebaseService, getFirebaseAuth, getFirebaseDB, isFirebaseReady } from '../services/firebase.client';
 
 interface UserProfile {
   uid: string;
@@ -25,10 +14,11 @@ interface UserProfile {
 }
 
 interface AuthState {
-  user: User | null;
+  user: any | null;
   userProfile: UserProfile | null;
   isLoading: boolean;
   isAuthenticated: boolean;
+  isMockAuth: boolean; // Nuevo: indica si estamos usando auth simulado
 }
 
 interface AuthContextType extends AuthState {
@@ -43,29 +33,44 @@ interface AuthContextType extends AuthState {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Función helper para logging
-const logAuthEvent = (eventType: string, details: Record<string, any>) => {
-  console.log(`🔐 [AUTH] ${eventType}:`, details);
-};
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AuthState>({
     user: null,
     userProfile: null,
     isLoading: true,
     isAuthenticated: false,
+    isMockAuth: false,
   });
 
-  // Cargar perfil del usuario desde Firestore
-  const loadUserProfile = async (user: User): Promise<UserProfile | null> => {
-    const db = getFirebaseDB();
-    
-    if (!firebaseInitialized || !db) {
-      console.log('⚠️ Firebase not initialized, skipping user profile load');
-      return null;
-    }
-
+  // Detectar si estamos usando Mock Auth
+  const checkIfMockAuth = async (): Promise<boolean> => {
     try {
+      const auth = await getFirebaseAuth();
+      if (!auth) return true;
+      
+      // Si el auth tiene currentUser como getter (Mock) vs propiedad normal (Firebase)
+      const descriptor = Object.getOwnPropertyDescriptor(auth, 'currentUser');
+      return !!(descriptor && typeof descriptor.get === 'function');
+    } catch (error) {
+      return true; // Si hay error, probablemente sea mock
+    }
+  };
+
+  // Cargar perfil del usuario desde Firestore
+  const loadUserProfile = async (user: any): Promise<UserProfile | null> => {
+    try {
+      if (!isFirebaseReady()) {
+        console.log('Firebase not ready for profile load');
+        return null;
+      }
+
+      const db = getFirebaseDB();
+      if (!db) {
+        console.log('Firestore not available');
+        return null;
+      }
+
+      const { doc, getDoc } = await import('firebase/firestore');
       const userDoc = await getDoc(doc(db, 'users', user.uid));
       if (userDoc.exists()) {
         return userDoc.data() as UserProfile;
@@ -78,7 +83,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   // Crear perfil de usuario en Firestore
-  const createUserProfile = async (user: User): Promise<UserProfile> => {
+  const createUserProfile = async (user: any): Promise<UserProfile> => {
     const profile: UserProfile = {
       uid: user.uid,
       email: user.email,
@@ -89,238 +94,295 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       favoriteCharacters: [],
     };
 
-    const db = getFirebaseDB();
-    
-    if (!firebaseInitialized || !db) {
-      console.log('⚠️ Firebase not initialized, returning profile without saving');
-      return profile;
-    }
-
     try {
+      if (!isFirebaseReady()) {
+        console.log('Firebase not ready, returning profile without saving');
+        return profile;
+      }
+
+      const db = getFirebaseDB();
+      if (!db) {
+        console.log('Firestore not available, returning profile without saving');
+        return profile;
+      }
+
+      const { doc, setDoc } = await import('firebase/firestore');
       await setDoc(doc(db, 'users', user.uid), profile);
       return profile;
     } catch (error) {
       console.error('Error creating user profile:', error);
-      return profile; // Devolver perfil aunque falle el guardado
+      return profile;
     }
   };
 
-  // Actualizar último login
-  const updateLastLogin = async (uid: string) => {
-    const db = getFirebaseDB();
-    
-    if (!firebaseInitialized || !db) {
-      console.log('⚠️ Firebase not initialized, skipping last login update');
-      return;
-    }
-
-    try {
-      await setDoc(
-        doc(db, 'users', uid),
-        { lastLoginAt: new Date().toISOString() },
-        { merge: true }
-      );
-    } catch (error) {
-      console.error('Error updating last login:', error);
-    }
-  };
-
-  // Manejar cambios de autenticación
+  // Configurar listener de autenticación con manejo de Mock
   useEffect(() => {
-    const auth = getFirebaseAuth();
-    
-    if (!firebaseInitialized || !auth) {
-      console.log('⚠️ Firebase not initialized, auth disabled');
-      setState({
-        user: null,
-        userProfile: null,
-        isLoading: false,
-        isAuthenticated: false,
-      });
-      return;
-    }
+    let unsubscribe: (() => void) | null = null;
+    let timeoutId: ReturnType<typeof setTimeout>;
 
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        // Usuario autenticado
-        let profile = await loadUserProfile(user);
+    const setupAuthListener = async () => {
+      try {
+        console.log('Setting up auth listener with bypass...');
         
-        if (!profile) {
-          // Crear perfil si no existe
-          profile = await createUserProfile(user);
-        } else {
-          // Actualizar último login
-          await updateLastLogin(user.uid);
+        // Inicializar Firebase Service
+        await firebaseService.initialize();
+
+        if (!isFirebaseReady()) {
+          console.log('Firebase Core not ready, waiting...');
+          
+          timeoutId = setTimeout(() => {
+            setupAuthListener(); // Reintentar
+          }, 3000);
+          return;
         }
 
-        setState({
-          user,
-          userProfile: profile,
-          isLoading: false,
-          isAuthenticated: true,
+        console.log('Firebase Core is ready, setting up Auth listener...');
+
+        // Intentar obtener Auth (puede ser real o mock)
+        const auth = await getFirebaseAuth();
+        if (!auth) {
+          console.log('Auth not available');
+          setState({
+            user: null,
+            userProfile: null,
+            isLoading: false,
+            isAuthenticated: false,
+            isMockAuth: false,
+          });
+          return;
+        }
+
+        // Detectar si es mock auth
+        const isMock = await checkIfMockAuth();
+        console.log('Auth type:', isMock ? 'Mock' : 'Real');
+
+        // Configurar el listener
+        unsubscribe = auth.onAuthStateChanged(async (user: any) => {
+          try {
+            console.log('Auth state changed:', user ? `User: ${user.email}` : 'No user');
+            
+            if (user) {
+              let profile = await loadUserProfile(user);
+              if (!profile) {
+                profile = await createUserProfile(user);
+              }
+
+              setState({
+                user,
+                userProfile: profile,
+                isLoading: false,
+                isAuthenticated: true,
+                isMockAuth: isMock,
+              });
+
+              // Guardar sesión localmente
+              await AsyncStorage.setItem('@multiversohub:auth', JSON.stringify({
+                uid: user.uid,
+                email: user.email,
+                isMock: isMock,
+              }));
+
+            } else {
+              setState({
+                user: null,
+                userProfile: null,
+                isLoading: false,
+                isAuthenticated: false,
+                isMockAuth: isMock,
+              });
+
+              // Limpiar sesión local
+              await AsyncStorage.removeItem('@multiversohub:auth');
+            }
+          } catch (error) {
+            console.error('Error in auth state change:', error);
+            setState({
+              user: null,
+              userProfile: null,
+              isLoading: false,
+              isAuthenticated: false,
+              isMockAuth: isMock,
+            });
+          }
         });
 
-        // Guardar sesión localmente
-        await AsyncStorage.setItem('@multiversohub:auth', JSON.stringify({
-          uid: user.uid,
-          email: user.email,
-        }));
+        console.log('Auth listener set up successfully');
 
-        logAuthEvent('user_login', { 
-          uid: user.uid, 
-          email: user.email,
-          provider: user.providerData[0]?.providerId || 'unknown'
-        });
-      } else {
-        // Usuario no autenticado
+      } catch (error) {
+        console.error('Error setting up auth listener:', error);
         setState({
           user: null,
           userProfile: null,
           isLoading: false,
           isAuthenticated: false,
+          isMockAuth: false,
         });
-
-        // Limpiar sesión local
-        await AsyncStorage.removeItem('@multiversohub:auth');
       }
-    });
+    };
 
-    return unsubscribe;
+    setupAuthListener();
+
+    return () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
   }, []);
 
-  // Iniciar sesión con email y contraseña
+  // Funciones de autenticación con manejo de Mock
   const signIn = async (email: string, password: string): Promise<void> => {
-    const auth = getFirebaseAuth();
+    setState(prev => ({ ...prev, isLoading: true }));
     
-    if (!firebaseInitialized || !auth) {
-      throw new Error('Autenticación no disponible - Firebase no configurado');
-    }
-
     try {
-      setState(prev => ({ ...prev, isLoading: true }));
-      await signInWithEmailAndPassword(auth, email, password);
-      logAuthEvent('auth_sign_in', { method: 'email', email });
-    } catch (error: any) {
-      console.error('Sign in error:', error);
-      throw new Error(getAuthErrorMessage(error.code));
-    } finally {
-      setState(prev => ({ ...prev, isLoading: false }));
-    }
-  };
-
-  // Registrarse con email y contraseña
-  const signUp = async (email: string, password: string, displayName?: string): Promise<void> => {
-    const auth = getFirebaseAuth();
-    
-    if (!firebaseInitialized || !auth) {
-      throw new Error('Registro no disponible - Firebase no configurado');
-    }
-
-    try {
-      setState(prev => ({ ...prev, isLoading: true }));
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      
-      // Actualizar perfil con nombre si se proporciona
-      if (displayName && userCredential.user) {
-        await updateProfile(userCredential.user, { displayName });
+      const auth = await getFirebaseAuth();
+      if (!auth) {
+        throw new Error('Authentication service not available');
       }
 
-      logAuthEvent('auth_sign_up', { method: 'email', email, hasDisplayName: !!displayName });
+      // Funciona tanto con Auth real como mock
+      const userCredential = await auth.signInWithEmailAndPassword(email, password);
+      console.log('Sign in successful');
+
+      // Para mock auth, simular el cambio de estado manualmente
+      const isMock = await checkIfMockAuth();
+      if (isMock && userCredential.user) {
+        // El listener se encargará del resto
+      }
+      
     } catch (error: any) {
-      console.error('Sign up error:', error);
-      throw new Error(getAuthErrorMessage(error.code));
+      console.error('Sign in error:', error);
+      throw new Error(getAuthErrorMessage(error.code || error.message));
     } finally {
       setState(prev => ({ ...prev, isLoading: false }));
     }
   };
 
-  // Cerrar sesión
-  const signOut = async (): Promise<void> => {
-    const auth = getFirebaseAuth();
+  const signUp = async (email: string, password: string, displayName?: string): Promise<void> => {
+    setState(prev => ({ ...prev, isLoading: true }));
     
-    if (!firebaseInitialized || !auth) {
-      throw new Error('Cerrar sesión no disponible - Firebase no configurado');
-    }
-
     try {
-      await firebaseSignOut(auth);
-      logAuthEvent('auth_sign_out', {});
+      const auth = await getFirebaseAuth();
+      if (!auth) {
+        throw new Error('Registration service not available');
+      }
+
+      const userCredential = await auth.createUserWithEmailAndPassword(email, password);
+      console.log('Registration successful');
+
+      // Para auth real, actualizar displayName
+      const isMock = await checkIfMockAuth();
+      if (!isMock && displayName && userCredential.user) {
+        // Solo para Firebase real
+        try {
+          const { updateProfile } = await import('firebase/auth');
+          await updateProfile(userCredential.user, { displayName });
+        } catch (updateError) {
+          console.log('Could not update profile:', updateError);
+        }
+      }
+
+    } catch (error: any) {
+      console.error('Registration error:', error);
+      throw new Error(getAuthErrorMessage(error.code || error.message));
+    } finally {
+      setState(prev => ({ ...prev, isLoading: false }));
+    }
+  };
+
+  const signOut = async (): Promise<void> => {
+    try {
+      const auth = await getFirebaseAuth();
+      if (!auth) {
+        throw new Error('Sign out service not available');
+      }
+
+      await auth.signOut();
+      console.log('Sign out successful');
     } catch (error) {
       console.error('Sign out error:', error);
       throw error;
     }
   };
 
-  // Iniciar sesión con Google
   const signInWithGoogle = async (idToken: string): Promise<void> => {
-    const auth = getFirebaseAuth();
+    setState(prev => ({ ...prev, isLoading: true }));
     
-    if (!firebaseInitialized || !auth) {
-      throw new Error('Google Sign-In no disponible - Firebase no configurado');
-    }
-
     try {
-      setState(prev => ({ ...prev, isLoading: true }));
+      // Solo funciona con Firebase real, no con mock
+      const isMock = await checkIfMockAuth();
+      if (isMock) {
+        throw new Error('Google Sign-In not available in development mode');
+      }
+
+      const auth = await getFirebaseAuth();
+      if (!auth) {
+        throw new Error('Google Sign-In not available');
+      }
+
+      const { GoogleAuthProvider, signInWithCredential } = await import('firebase/auth');
       const credential = GoogleAuthProvider.credential(idToken);
       await signInWithCredential(auth, credential);
-      logAuthEvent('auth_sign_in', { method: 'google' });
+      console.log('Google Sign-In successful');
     } catch (error: any) {
-      console.error('Google sign in error:', error);
-      throw new Error(getAuthErrorMessage(error.code));
+      console.error('Google Sign-In error:', error);
+      throw new Error(getAuthErrorMessage(error.code || error.message));
     } finally {
       setState(prev => ({ ...prev, isLoading: false }));
     }
   };
 
-  // Resetear contraseña
   const resetPassword = async (email: string): Promise<void> => {
-    const auth = getFirebaseAuth();
-    
-    if (!firebaseInitialized || !auth) {
-      throw new Error('Recuperación de contraseña no disponible - Firebase no configurado');
-    }
-
     try {
-      await sendPasswordResetEmail(auth, email);
-      logAuthEvent('auth_password_reset', { email });
+      const auth = await getFirebaseAuth();
+      if (!auth) {
+        throw new Error('Password reset service not available');
+      }
+
+      await auth.sendPasswordResetEmail(email);
+      console.log('Password reset email sent');
     } catch (error: any) {
       console.error('Password reset error:', error);
-      throw new Error(getAuthErrorMessage(error.code));
+      throw new Error(getAuthErrorMessage(error.code || error.message));
     }
   };
 
-  // Actualizar perfil de usuario
   const updateUserProfile = async (data: Partial<UserProfile>): Promise<void> => {
     if (!state.user) throw new Error('User not authenticated');
     
-    const db = getFirebaseDB();
-    
-    if (!firebaseInitialized || !db) {
-      console.log('⚠️ Firebase not initialized, skipping profile update');
-      return;
-    }
-
     try {
+      if (!isFirebaseReady()) {
+        console.log('Firebase not ready, skipping profile update');
+        return;
+      }
+
+      const db = getFirebaseDB();
+      if (!db) {
+        console.log('Firestore not available, skipping profile update');
+        return;
+      }
+
+      const { doc, setDoc } = await import('firebase/firestore');
       await setDoc(
         doc(db, 'users', state.user.uid),
         { ...data, lastUpdated: new Date().toISOString() },
         { merge: true }
       );
 
-      // Actualizar estado local
       setState(prev => ({
         ...prev,
         userProfile: prev.userProfile ? { ...prev.userProfile, ...data } : null,
       }));
 
-      logAuthEvent('user_profile_updated', { fields: Object.keys(data) });
+      console.log('Profile updated');
     } catch (error) {
-      console.error('Error updating user profile:', error);
+      console.error('Error updating profile:', error);
       throw error;
     }
   };
 
-  // Refrescar perfil de usuario
   const refreshUserProfile = async (): Promise<void> => {
     if (!state.user) return;
 
@@ -328,7 +390,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const profile = await loadUserProfile(state.user);
       setState(prev => ({ ...prev, userProfile: profile }));
     } catch (error) {
-      console.error('Error refreshing user profile:', error);
+      console.error('Error refreshing profile:', error);
     }
   };
 
@@ -356,8 +418,14 @@ export function useAuth() {
   return context;
 }
 
-// Mensajes de error amigables
 function getAuthErrorMessage(errorCode: string): string {
+  // Manejar errores de mock auth también
+  if (typeof errorCode === 'string') {
+    if (errorCode.includes('Mock:')) {
+      return 'Error en autenticación de desarrollo';
+    }
+  }
+
   switch (errorCode) {
     case 'auth/user-not-found':
       return 'No existe una cuenta con este email';
